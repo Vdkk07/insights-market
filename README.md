@@ -10,7 +10,7 @@ Insights Market is a fully on-chain prediction market platform built on Solana. 
 
 ## Live Demo
 
-[https://insights-market.vercel.app](https://insights-market.vercel.app)
+[https://insights-market-capstone.vercel.app](https://insights-market-capstone.vercel.app)
 
 ---
 
