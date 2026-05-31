@@ -137,7 +137,7 @@ export function MarketFeature() {
               </CardContent>
               <CardFooter>
                 <Button asChild variant="outline" className="w-full">
-                  <Link href={`/markets/${market.publicKey.toString()}`}>
+                  <Link href={`/markets/${String(market.publicKey)}`}>
                     {isResolved ? 'View Resolution' : 'Trade'}
                   </Link>
                 </Button>
