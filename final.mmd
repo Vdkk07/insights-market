@@ -1,0 +1,179 @@
+graph TB
+    subgraph "External Systems"
+        GROQ[("Groq AI API<br/>(Mixtral-8x7b)")]
+        MONGO[("MongoDB<br/>Markets Database")]
+        USER["👤 End Users<br/>(Traders)"]
+    end
+
+    subgraph "Off-Chain Bot (Python)"
+        BOT["PredictionMarketBot<br/>Authority Keypair"]
+        BOT_GEN["Market Generation<br/>Loop"]
+        BOT_RES["Resolution Loop<br/>(2min intervals)"]
+        BOT_SWEEP["Fund Sweeping<br/>(24h after resolution)"]
+        
+        BOT --> BOT_GEN
+        BOT --> BOT_RES
+        BOT --> BOT_SWEEP
+    end
+
+    subgraph "Solana Program (3AewMi...GeGsUc)"
+        PROG["Prediction Market<br/>Program"]
+        
+        subgraph "Instructions"
+            INIT["initialize()<br/>One-time setup"]
+            CREATE["create_market()<br/>AI creates markets"]
+            BUY["buy_shares()<br/>Users trade"]
+            RESOLVE["resolve_market()<br/>AI resolves outcome"]
+            CLAIM["claim_winnings()<br/>Users claim payouts"]
+            SWEEP["sweep_funds()<br/>AI recovers dust"]
+        end
+        
+        PROG --> INIT
+        PROG --> CREATE
+        PROG --> BUY
+        PROG --> RESOLVE
+        PROG --> CLAIM
+        PROG --> SWEEP
+    end
+
+    subgraph "AMM Core Logic (Constant Product Formula)"
+        AMM["Constant Product AMM<br/>x × y = k"]
+        
+        subgraph "AMM State Variables"
+            YES_LIQ["yes_liquidity: u64<br/>(x in formula)"]
+            NO_LIQ["no_liquidity: u64<br/>(y in formula)"]
+            K_CONST["k_constant: u128<br/>(x × y = constant)"]
+            INIT_LIQ["initial_liquidity: u64<br/>(baseline)"]
+        end
+        
+        subgraph "AMM Operations"
+            BUY_YES["Buy YES Shares<br/>---<br/>1. Add SOL to YES pool<br/>2. new_yes = yes + amount<br/>3. new_no = k / new_yes<br/>4. shares = old_no - new_no"]
+            
+            BUY_NO["Buy NO Shares<br/>---<br/>1. Add SOL to NO pool<br/>2. new_no = no + amount<br/>3. new_yes = k / new_no<br/>4. shares = old_yes - new_yes"]
+            
+            PRICE["Dynamic Pricing<br/>---<br/>• More YES bought → YES price ↑<br/>• Pool imbalance = price signal<br/>• Slippage protection via min_shares_out"]
+            
+            FEE["Fee Handling<br/>---<br/>• 2% fee to authority<br/>• 98% enters AMM pool<br/>• K updated with net amount"]
+        end
+        
+        AMM --> YES_LIQ
+        AMM --> NO_LIQ
+        AMM --> K_CONST
+        AMM --> INIT_LIQ
+        AMM --> BUY_YES
+        AMM --> BUY_NO
+        AMM --> PRICE
+        AMM --> FEE
+    end
+
+    subgraph "On-Chain Accounts"
+        subgraph "PDAs (Program-Derived Addresses)"
+            CONFIG["Config Account<br/>Seeds: ['config']<br/>---<br/>• authority: Pubkey<br/>• market_count: u64<br/>• fee_percentage: u16 (2%)<br/>• bump: u8"]
+            
+            MARKET["Market Account<br/>Seeds: ['market', market_id]<br/>---<br/>• question: String<br/>• <b>AMM STATE:</b><br/>• yes_liquidity: u64<br/>• no_liquidity: u64<br/>• k_constant: u128<br/>• initial_liquidity: u64<br/>• <b>TOTALS: (NEW)</b><br/>• total_yes_shares: u128<br/>• total_no_shares: u128<br/>---<br/>• resolved: bool<br/>• outcome: Option&lt;bool&gt;<br/>• total_volume: u64"]
+            
+            VAULT["Vault PDA<br/>Seeds: ['vault', market_id]<br/>---<br/>• Holds all SOL<br/>• Sum of both pools<br/>• Controlled by program<br/>• Funds trading + payouts"]
+            
+            POSITION["UserPosition Account<br/>Seeds: ['position', user, market_id]<br/>---<br/>• yes_shares: u64<br/>• no_shares: u64<br/>• claimed: bool"]
+        end
+        
+        AUTH["Authority Account<br/>(Bot's Keypair)<br/>---<br/>• Receives fees (2%)<br/>• Seeds markets with SOL<br/>• Sweeps dust"]
+        
+        USER_ACCT["User Accounts<br/>(Signers)<br/>---<br/>• Pay for shares<br/>• Receive winnings"]
+    end
+
+    subgraph "Payout Calculation (Post-Resolution)"
+    
+        PAYOUT["Proportional Payout Logic"]
+        
+        CALC_SHARES["Read Total Winning Shares<br/>(NEW LOGIC)<br/>---<br/>If YES wins:<br/>  total = market.total_yes_shares<br/>If NO wins:<br/>  total = market.total_no_shares"]
+        
+        CALC_PAYOUT["User Payout Formula<br/>---<br/>payout = (user_shares / total_shares) × vault_balance"]
+        
+        PAYOUT --> CALC_SHARES
+        PAYOUT --> CALC_PAYOUT
+    end
+
+    %% Flow 1: Initialization
+    BOT -->|"1. initialize()"| INIT
+    INIT -->|"Creates & stores"| CONFIG
+    AUTH -.->|"Sets as authority"| CONFIG
+
+    %% Flow 2: Market Creation with AMM Setup
+    GROQ -->|"Generate idea"| BOT_GEN
+    BOT_GEN -->|"2. create_market()"| CREATE
+    CREATE -->|"Creates"| MARKET
+    CREATE -->|"Creates"| VAULT
+    AUTH -->|"Transfers 0.2 SOL<br/>(0.1 YES + 0.1 NO)"| VAULT
+    CREATE -->|"Initialize AMM:<br/>yes_liquidity = 0.1 SOL<br/>no_liquidity = 0.1 SOL<br/>k = 0.01<br/>total_shares = 0"| MARKET
+    CONFIG -->|"Increments market_count"| CREATE
+    BOT_GEN -->|"Stores metadata"| MONGO
+
+    %% Flow 3: Trading with AMM
+    USER -->|"3. buy_shares(is_yes, amount, min_shares)"| BUY
+    USER_ACCT -->|"Transfers SOL"| BUY
+    BUY -->|"Extract 2% fee"| FEE
+    FEE -->|"Fee amount"| AUTH
+    BUY -->|"98% to AMM"| AMM
+    
+    AMM -->|"If buying YES"| BUY_YES
+    AMM -->|"If buying NO"| BUY_NO
+    
+    BUY_YES -->|"Update pools"| MARKET
+    BUY_NO -->|"Update pools"| MARKET
+    PRICE -.->|"Slippage check"| BUY
+    
+    MARKET -->|"Store 98% net amount"| VAULT
+    BUY -->|"Mint calculated shares"| POSITION
+    BUY -->|"Increment total_yes_shares<br/>or total_no_shares"| MARKET
+
+    %% Flow 4: Resolution
+    BOT_RES -->|"Query unresolved"| MONGO
+    MONGO -->|"Markets past deadline"| BOT_RES
+    GROQ -->|"Determine outcome"| BOT_RES
+    BOT_RES -->|"4. resolve_market(outcome_yes)"| RESOLVE
+    RESOLVE -->|"Sets resolved=true<br/>Sets outcome<br/>Freezes AMM"| MARKET
+
+    %% Flow 5: Claiming Winnings with Payout Calculation
+    USER -->|"5. claim_winnings()"| CLAIM
+    CLAIM -->|"Reads outcome"| MARKET
+    CLAIM -->|"Reads user shares"| POSITION
+    CLAIM -->|"Use new payout logic"| PAYOUT
+    PAYOUT -->|"Read total_yes/no_shares"| MARKET
+    CALC_SHARES -->|"Read tracked denominator"| CALC_PAYOUT
+    CALC_PAYOUT -->|"Final amount"| CLAIM
+    VAULT -->|"Transfer winnings"| USER_ACCT
+    CLAIM -->|"Mark claimed=true"| POSITION
+
+    %% Flow 6: Fund Sweeping
+    BOT_SWEEP -->|"Query resolved markets<br/>(24h+ after resolution)"| MONGO
+    MONGO -->|"Eligible markets"| BOT_SWEEP
+    BOT_SWEEP -->|"6. sweep_funds()"| SWEEP
+    SWEEP -->|"Verifies resolved"| MARKET
+    VAULT -->|"Transfer remaining SOL"| AUTH
+    BOT_SWEEP -->|"Mark swept=true"| MONGO
+
+    %% AMM to Market State Connection
+    YES_LIQ -.->|"Stored in"| MARKET
+    NO_LIQ -.->|"Stored in"| MARKET
+    K_CONST -.->|"Stored in"| MARKET
+    INIT_LIQ -.->|"Stored in"| MARKET
+
+    %% Styling -- HIGH CONTRAST
+    classDef external fill:#E3F2FD,stroke:#01579B,stroke-width:2px
+    classDef bot fill:#FFF8E1,stroke:#E65100,stroke-width:2px
+    classDef program fill:#F3E5F5,stroke:#4A148C,stroke-width:2px
+    classDef instruction fill:#E8EAF6,stroke:#1A237E,stroke-width:2px
+    classDef amm fill:#FFEBEE,stroke:#B71C1C,stroke-width:3px
+    classDef pda fill:#E8F5E9,stroke:#1B5E20,stroke-width:3px
+    classDef account fill:#FFFDE7,stroke:#F57F17,stroke-width:2px
+    classDef payout fill:#F1F8E9,stroke:#33691E,stroke-width:2px
+    
+    class GROQ,MONGO,USER external
+    class BOT,BOT_GEN,BOT_RES,BOT_SWEEP bot
+    class PROG program
+    class INIT,CREATE,BUY,RESOLVE,CLAIM,SWEEP instruction
+    class AMM,YES_LIQ,NO_LIQ,K_CONST,INIT_LIQ,BUY_YES,BUY_NO,PRICE,FEE amm
+    class CONFIG,MARKET,VAULT,POSITION pda
+    class AUTH,USER_ACCT account
+    class PAYOUT,CALC_SHARES,CALC_PAYOUT payout
